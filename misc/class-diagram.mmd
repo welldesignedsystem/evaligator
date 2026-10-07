@@ -1,0 +1,1063 @@
+classDiagram
+%% Types below are Python annotations written for this diagram. The evalkit
+%% source itself is not in this repository, so member names and relationships
+%% come from the class reference in evals.md and the types are annotations added
+%% here, not a transcription of shipped code.
+%%
+%% Dunder members use markdown escapes (+\_\_len\_\_) because mermaid runs
+%% class labels through markdown: unescaped __name__ renders as bold "name"
+%% with both underscore pairs eaten.
+%%
+%% Every line starting with %% is a comment and never shows up in the render.
+%% The comments below describe what each class and method does.
+%%
+%% Render: npx -p @mermaid-js/mermaid-cli mmdc -i <this file> -o <file>.png \
+%%   -b white --scale 16
+%% Scale 16, not the documented default 8: this diagram is twice as wide as the
+%% untyped one, so scale 8 renders at 0.37 px/unit against the 0.77 px/unit of
+%% the previously committed PNG and halves label size.
+%%
+%% Conventions used in the notes:
+%%   - Scorer subclasses override the name / score_type / threshold properties
+%%     in the book; those overrides are not repeated per class here.
+%%   - Scorer.score() also accepts **kwargs in the book (agent and RAG scorers
+%%     read extra inputs such as expected_tools / actual_tools from them).
+%%   - Properties in the book (CostReport totals, ScorerCache.hit_rate,
+%%     AgentTrajectory accessors) are shown as attributes, not methods.
+
+%% ===== Core types =====
+
+%% ScoreType: the kind of value a scorer produces, so reports and thresholds
+%% know how to interpret it.
+class ScoreType:::core {
+    <<enumeration>>
+    %% pass/fail, 0 or 1
+    BINARY
+    %% continuous number, usually 0.0 to 1.0
+    NUMERIC
+    %% ordinal rating, e.g. 1 to 5
+    LIKERT
+    %% one label out of a fixed set
+    CATEGORICAL
+}
+%% EvalCase: one test example. The input sent to the system under test, the
+%% optional reference answer, and tags/metadata for filtering and grouping.
+class EvalCase:::core {
+    %% prompt or query sent to the system under test
+    +input: str
+    %% reference answer, if there is one
+    +expected: str | None
+    %% free-form key/value info about the case
+    +metadata: dict[str, str]
+    %% labels used by Dataset.filter_by_tag
+    +tags: list[str]
+}
+%% EvalResult: the outcome of running one EvalCase: output, every scorer's
+%% verdict, overall pass/fail, timing and any error.
+class EvalResult:::core {
+    %% the case that was run
+    +case: EvalCase
+    %% what the system under test produced
+    +output: str
+    %% one ScoreResult per scorer
+    +scores: list[ScoreResult]
+    %% overall verdict across scorers
+    +passed: bool
+    %% extra run info (model, tokens, ...)
+    +metadata: dict[str, Any]
+    %% time the system took to answer
+    +latency_ms: float
+    %% exception text if the system or a scorer failed
+    +error: str | None
+}
+%% EvalReport: aggregate of all EvalResults for a run (counts, pass rate,
+%% average scores and latency).
+class EvalReport:::core {
+    %% label for the run
+    +name: str
+    %% every per-case result
+    +results: list[EvalResult]
+    %% number of cases
+    +total: int
+    %% cases that passed
+    +passed: int
+    %% cases that failed
+    +failed: int
+    %% passed / total
+    +pass_rate: float
+    %% mean score per scorer name
+    +avg_scores: dict[str, float]
+    %% mean latency over cases
+    +avg_latency_ms: float
+    %% dataclass hook: computes the derived totals and averages from results
+    +\_\_post_init\_\_() None
+    %% human-readable multi-line text summary of the run
+    +summary() str
+}
+%% EvalConfig: project-wide settings (thresholds and output directories). In
+%% the book it is a standalone settings object; runners take their own
+%% pass_threshold argument rather than reading it.
+class EvalConfig:::core {
+    %% name used when naming outputs
+    +project_name: str
+    %% default pass cut-off for scores
+    +pass_threshold: float
+    %% how much a metric may drop before it counts as a regression
+    +regression_tolerance: float
+    %% creates the folders eval artifacts are written to
+    +ensure_dirs() None
+}
+%% Dataset: an ordered, named collection of EvalCases with load/save, filter
+%% and sampling helpers.
+class Dataset:::core {
+    %% dataset label
+    +name: str
+    %% the test cases
+    +cases: list[EvalCase]
+    %% number of cases
+    +\_\_len\_\_() int
+    %% iterate over cases
+    +\_\_iter\_\_() Iterator[EvalCase]
+    %% access one case by position
+    +\_\_getitem\_\_(index: int) EvalCase
+    %% returns a new Dataset with only the cases carrying the tag
+    +filter_by_tag(tag: str) Dataset
+    %% random subset; a seed makes it reproducible
+    +sample(n: int, seed: int | None) Dataset
+    %% loads a dataset from a JSON file
+    +from_json(path: str) Dataset
+    %% loads a dataset from a JSON-Lines file (one case per line)
+    +from_jsonl(path: str) Dataset
+    %% serialises to JSON; writes to path if given, always returns the text
+    +to_json(path: str | None) str
+    %% case counts, tag distribution and similar summary numbers
+    +stats() dict[str, Any]
+}
+%% ScoreResult: what a single scorer returns for a single output.
+class ScoreResult:::core {
+    %% which scorer produced it
+    +name: str
+    %% the numeric score
+    +score: float
+    %% whether the score cleared the scorer's threshold
+    +passed: bool
+    %% short explanation of the score
+    +reason: str
+    %% unprocessed value (e.g. judge's raw rating, similarity, parsed JSON)
+    +raw_value: Any
+}
+%% A report holds results, a result holds its case, a dataset holds cases
+EvalReport o-- EvalResult
+EvalResult o-- EvalCase
+%% added: EvalResult.scores is a list of ScoreResult
+EvalResult o-- ScoreResult
+Dataset o-- EvalCase
+
+%% ===== Scorers =====
+
+%% Scorer: abstract base. Takes a model output (and optional expected answer)
+%% and returns a ScoreResult. Everything in this section implements it.
+class Scorer:::scorer {
+    <<abstract>>
+    %% identifier used as the key in avg_scores
+    +name: str
+    %% kind of value the scorer emits
+    +score_type: ScoreType
+    %% pass cut-off applied to the score
+    +threshold: float
+    %% scores one output; subclasses implement this
+    +score(output: str, expected: str | None) ScoreResult
+    %% scores many outputs; default loops over score(), overridden for batching
+    +score_batch(outputs: list[str], expecteds: list[str]) list[ScoreResult]
+}
+%% ExactMatch: passes only when output equals expected exactly.
+class ExactMatch:::scorer {
+    %% 1.0 on identical strings, else 0.0
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% Contains: passes when expected appears as a substring of the output.
+class Contains:::scorer {
+    %% substring check
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% RegexMatch: passes when the output matches a regular expression.
+class RegexMatch:::scorer {
+    %% regex search against the output
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% AllOf: composite. Passes only if every wrapped scorer passes.
+class AllOf:::scorer {
+    %% runs child scorers and ANDs the verdicts
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% AnyOf: composite. Passes if at least one wrapped scorer passes.
+class AnyOf:::scorer {
+    %% runs child scorers and ORs the verdicts
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% ContainsAll: passes when the output includes every required keyword;
+%% score is the fraction found.
+class ContainsAll:::scorer {
+    %% fraction of required terms present
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% ContainsAny: passes when the output includes at least one of the keywords.
+class ContainsAny:::scorer {
+    %% any-term presence check
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% JsonMatch: parses the output as JSON and compares it with the expected JSON.
+class JsonMatch:::scorer {
+    %% parse both sides, compare structures (fails on invalid JSON)
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% LevenshteinSimilarity: fuzzy string match, 1 - edit distance / max length.
+class LevenshteinSimilarity:::scorer {
+    %% normalised similarity between output and expected
+    +score(output: str, expected: str | None) ScoreResult
+    %% classic dynamic-programming edit distance
+    -_levenshtein_distance(a: str, b: str) int
+}
+%% JsonSchemaValid: checks that the output is JSON conforming to a schema.
+class JsonSchemaValid:::scorer {
+    %% parse output, validate against the schema
+    +score(output: str, expected: str | None) ScoreResult
+    %% small recursive validator (types, required keys, nested objects)
+    -_validate(instance: Any, schema: dict[str, Any]) bool
+}
+%% EmbeddingSimilarity: semantic match via cosine similarity of embeddings.
+class EmbeddingSimilarity:::scorer {
+    %% embeds output and expected, scores their cosine similarity
+    +score(output: str, expected: str | None) ScoreResult
+    %% embeds all pairs in one call instead of one request per case
+    +score_batch(outputs: list[str], expecteds: list[str]) list[ScoreResult]
+    %% calls the embedding model for a list of texts
+    -_get_embeddings(texts: list[str]) list[list[float]]
+    %% dot product over norms
+    -_cosine_similarity(a: list[float], b: list[float]) float
+}
+%% LengthRange: passes when output length is within min/max bounds.
+class LengthRange:::scorer {
+    %% length bounds check
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% NoForbiddenContent: fails if the output contains any banned phrase.
+class NoForbiddenContent:::scorer {
+    %% scans for forbidden terms
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% PythonSyntaxValid: passes when the output parses as Python.
+class PythonSyntaxValid:::scorer {
+    %% extracts code, then tries to parse it with the ast module
+    +score(output: str, expected: str | None) ScoreResult
+    %% pulls code out of markdown fences if the model wrapped it
+    -_extract_python(text: str) str
+}
+%% SqlSyntaxValid: lightweight check that the output looks like valid SQL.
+class SqlSyntaxValid:::scorer {
+    %% basic structural SQL check
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% ContextRelevance (RAG): do the retrieved chunks actually relate to the query?
+class ContextRelevance:::scorer {
+    %% averages per-chunk relevance judgements
+    +score(output: str, expected: str | None) ScoreResult
+    %% asks an LLM how relevant one chunk is (returns a number in the book)
+    -_judge_chunk(query: str, chunk: str) float
+}
+%% Faithfulness (RAG): is every claim in the answer supported by the context?
+class Faithfulness:::scorer {
+    %% fraction of claims that are supported
+    +score(output: str, expected: str | None) ScoreResult
+    %% LLM splits the answer into atomic claims
+    -_extract_claims(answer: str) list[str]
+    %% LLM checks one claim against the retrieved contexts
+    -_verify_claim(claim: str, contexts: list[str]) bool
+}
+%% AnswerCompleteness (RAG): does the answer cover what the question needs?
+class AnswerCompleteness:::scorer {
+    %% LLM judges coverage of the expected points
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% ContextRecall (RAG): did retrieval bring back the ground-truth information?
+class ContextRecall:::scorer {
+    %% share of the ground truth found in the retrieved contexts
+    +score(output: str, expected: str | None) ScoreResult
+    %% word-overlap measure between an answer and the contexts
+    -_text_overlap(answer: str, contexts: list[str]) float
+}
+%% ToolCallCorrectness (agent): did the agent call the right tools in order?
+class ToolCallCorrectness:::scorer {
+    %% compares actual tool-name sequence with the expected one
+    +score(output: str, expected: str | None) ScoreResult
+    %% longest common subsequence, tolerant of extra or skipped calls
+    -_lcs_length(actual: list[str], expected: list[str]) int
+}
+%% TrajectoryEfficiency (agent): penalises too many steps or tool calls.
+class TrajectoryEfficiency:::scorer {
+    %% compares steps taken with an optimal/maximum step budget
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% MultiTurnCoherence (agent/chat): does the conversation stay consistent?
+class MultiTurnCoherence:::scorer {
+    %% LLM judges consistency across turns
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% TaskCompletion (agent): did the agent actually accomplish the task?
+class TaskCompletion:::scorer {
+    %% judges the final answer/trajectory against the task goal
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% CachedScorer: decorator that memoises another scorer on disk so repeated
+%% (expensive) calls are free.
+class CachedScorer:::scorer {
+    %% cache lookup first, delegate to wrapped scorer on a miss
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% LangfuseScorer: decorator that runs a scorer and reports the score to Langfuse.
+class LangfuseScorer:::scorer {
+    %% delegate to wrapped scorer, then push the result to Langfuse
+    +score(output: str, expected: str | None) ScoreResult
+}
+
+Scorer <|-- ExactMatch
+Scorer <|-- Contains
+Scorer <|-- RegexMatch
+Scorer <|-- AllOf
+Scorer <|-- AnyOf
+Scorer <|-- ContainsAll
+Scorer <|-- ContainsAny
+Scorer <|-- JsonMatch
+Scorer <|-- LevenshteinSimilarity
+Scorer <|-- JsonSchemaValid
+Scorer <|-- EmbeddingSimilarity
+Scorer <|-- LengthRange
+Scorer <|-- NoForbiddenContent
+Scorer <|-- PythonSyntaxValid
+Scorer <|-- SqlSyntaxValid
+Scorer <|-- LLMJudge
+Scorer <|-- LengthNormalizedJudge
+Scorer <|-- ConsensusJudge
+Scorer <|-- ContextRelevance
+Scorer <|-- Faithfulness
+Scorer <|-- AnswerCompleteness
+Scorer <|-- ContextRecall
+Scorer <|-- ToolCallCorrectness
+Scorer <|-- TrajectoryEfficiency
+Scorer <|-- MultiTurnCoherence
+Scorer <|-- TaskCompletion
+Scorer <|-- CachedScorer
+Scorer <|-- LangfuseScorer
+%% composites hold the scorers they combine
+AllOf o-- Scorer : combines
+AnyOf o-- Scorer : combines
+Scorer ..> ScoreResult : returns
+Scorer ..> ScoreType : score_type
+
+%% ScorerCache: on-disk key/value store for ScoreResults, with hit/miss counts.
+class ScorerCache:::scorer {
+    %% cache directory
+    -_dir: Path
+    %% lookups answered from cache
+    -_hits: int
+    %% lookups that had to be computed
+    -_misses: int
+    %% builds a stable hash key from scorer name + inputs
+    -_key(scorer_name: str, payload: str) str
+    %% returns the cached ScoreResult or None
+    +get(key: str) ScoreResult | None
+    %% stores a ScoreResult under the key
+    +set(key: str, value: ScoreResult) None
+    %% hits / (hits + misses); a property in the book
+    +hit_rate: float
+}
+%% CachedScorer decorates a scorer and uses the cache
+CachedScorer o-- Scorer : wraps
+CachedScorer --> ScorerCache
+ScorerCache ..> ScoreResult
+
+%% ===== Judge / calibration =====
+
+%% JudgeCriterion: one dimension an LLM judge grades (e.g. accuracy, tone).
+class JudgeCriterion:::judge {
+    %% criterion label
+    +name: str
+    %% what the judge should look for
+    +description: str
+    %% importance when criteria are combined
+    +weight: float
+    %% scale description, e.g. "1-5"
+    +scale: str
+}
+%% JudgeConfig: everything needed to configure an LLM judge call.
+class JudgeConfig:::judge {
+    %% judge model id
+    +model: str
+    %% sampling temperature (low for consistency)
+    +temperature: float
+    %% response length cap
+    +max_tokens: int
+    %% what to grade
+    +criteria: list[JudgeCriterion]
+    %% instructions sent to the judge model
+    +system_prompt: str
+    %% score at or above which an output passes
+    +pass_score: float
+}
+%% CalibrationCase: pairs a human score with the judge's score for the same
+%% output, used to measure how well the judge tracks humans.
+class CalibrationCase:::judge {
+    %% id shared with the annotation
+    +case_id: str
+    %% original task prompt
+    +task_input: str
+    %% what the human annotator scored
+    +human_score: float
+    %% what the LLM judge scored
+    +judge_score: float
+    %% the output that was graded
+    +output: str
+}
+%% LLMJudge: scores an output by asking an LLM to grade it against criteria.
+class LLMJudge:::judge {
+    %% builds prompt, calls the model, parses the verdict
+    +score(output: str, expected: str | None) ScoreResult
+    %% formats criteria + output (+ expected) into the judge prompt
+    -_build_prompt(output: str, expected: str | None) str
+    %% turns the judge's reply into a ScoreResult
+    -_parse_response(response: str) ScoreResult
+}
+%% LengthNormalizedJudge: corrects the judge's well-known bias toward long answers.
+class LengthNormalizedJudge:::judge {
+    %% judge score adjusted for output length
+    +score(output: str, expected: str | None) ScoreResult
+}
+%% ConsensusJudge: runs several judges (one per config) and combines their scores.
+class ConsensusJudge:::judge {
+    %% aggregates scores from all inner judges (e.g. mean / majority)
+    +score(output: str, expected: str | None) ScoreResult
+}
+LLMJudge --> JudgeConfig
+LengthNormalizedJudge o-- LLMJudge : wraps
+ConsensusJudge *-- LLMJudge : builds one per config
+ConsensusJudge ..> JudgeConfig
+JudgeConfig o-- JudgeCriterion
+%% added: calibration pairs are used to check an LLMJudge against humans
+CalibrationCase ..> LLMJudge : calibrates
+
+%% ===== Guardrails =====
+
+%% Guardrail: base class for runtime output checks that can pass, modify or block.
+class Guardrail:::guardrail {
+    %% inspects one output and returns a GuardrailResult
+    +check(output: str) GuardrailResult
+}
+%% ProfanityGuardrail: flags or masks profane language.
+class ProfanityGuardrail:::guardrail {
+    %% word-list check
+    +check(output: str) GuardrailResult
+}
+%% LengthGuardrail: blocks or truncates over-long output.
+class LengthGuardrail:::guardrail {
+    %% length limit check
+    +check(output: str) GuardrailResult
+}
+%% PIIGuardrail: detects personal data (emails, phone numbers, ...) and redacts it.
+class PIIGuardrail:::guardrail {
+    %% pattern-based PII detection / redaction
+    +check(output: str) GuardrailResult
+}
+%% GuardrailResult: verdict of one guardrail, with before/after text.
+class GuardrailResult:::guardrail {
+    %% true if the output was acceptable
+    +passed: bool
+    %% which guardrail ran
+    +guardrail_name: str
+    %% what was done: pass, modify or block
+    +action: str
+    %% why
+    +reason: str
+    %% guardrail execution time
+    +latency_ms: float
+    %% text before the guardrail
+    +original_output: str
+    %% text after any redaction/truncation
+    +modified_output: str
+}
+%% GuardrailPipeline: runs guardrails in sequence, feeding each the previous output.
+class GuardrailPipeline:::guardrail {
+    %% applies all guardrails; stops early if one blocks
+    +run(output: str) PipelineResult
+}
+%% PipelineResult: combined outcome of the whole guardrail chain.
+class PipelineResult:::guardrail {
+    %% output after all modifications
+    +final_output: str
+    %% true if any guardrail blocked it
+    +blocked: bool
+    %% each guardrail's verdict in order
+    +guardrail_results: list[GuardrailResult]
+    %% total time across the chain
+    +total_latency_ms: float
+}
+Guardrail <|-- ProfanityGuardrail
+Guardrail <|-- LengthGuardrail
+Guardrail <|-- PIIGuardrail
+Guardrail ..> GuardrailResult : returns
+GuardrailPipeline o-- Guardrail
+GuardrailPipeline --> PipelineResult
+PipelineResult o-- GuardrailResult
+
+%% ===== Execution / runners =====
+
+%% Runner: the basic evaluation loop. Calls the system on each case, applies
+%% every scorer, and builds an EvalReport.
+class Runner:::runner {
+    %% the system under test: input text in, output text out
+    +system: Callable
+    %% scorers applied to every output
+    +scorers: list[Scorer]
+    %% share of scorers/score needed for a case to pass
+    +pass_threshold: float
+    %% runs one case: call system, score, collect an EvalResult
+    +run_case(case: EvalCase) EvalResult
+    %% runs the whole dataset and aggregates into a report
+    +run(dataset: Dataset) EvalReport
+}
+%% CostAwareRunner: like Runner but tracks LLM-judge spend and stops at a budget.
+class CostAwareRunner:::runner {
+    %% system under test
+    +system: Callable
+    %% scorers to apply
+    +scorers: list[Scorer]
+    %% maximum spend allowed for the run
+    +budget: float
+    %% pass cut-off
+    +pass_threshold: float
+    %% running record of token usage and cost
+    +cost_report: CostReport
+    %% runs the dataset until done or budget hit; returns report and costs
+    +run(dataset: Dataset) tuple[EvalReport, CostReport]
+}
+%% TieredRunner: cheap scorers first; expensive ones (LLM judges) only run when
+%% the cheap ones pass, to save money.
+class TieredRunner:::runner {
+    %% system under test
+    +system: Callable
+    %% cheap deterministic scorers, always run
+    +fast_scorers: list[Scorer]
+    %% expensive scorers, run only on survivors of the fast tier
+    +slow_scorers: list[Scorer]
+    %% pass cut-off
+    -_threshold: float
+    %% runs one case through both tiers
+    +run_case(case: EvalCase) EvalResult
+    %% runs the dataset tier by tier
+    +run(dataset: Dataset) EvalReport
+}
+%% ConcurrentRunner: async runner that evaluates many cases in parallel,
+%% limited by a semaphore.
+class ConcurrentRunner:::runner {
+    %% system under test
+    +system: Callable
+    %% scorers to apply
+    +scorers: list[Scorer]
+    %% pass cut-off
+    +pass_threshold: float
+    %% max cases in flight at once
+    -_semaphore_limit: int
+    %% async version of run_case guarded by the semaphore
+    -_run_case_async(case: EvalCase) EvalResult
+    %% sync entry point: drives the event loop and builds the report
+    +run(dataset: Dataset) EvalReport
+    %% gathers all case coroutines
+    -_run_all(cases: list[EvalCase]) list[EvalResult]
+}
+%% CostEntry: one line item of spend, attributed to a scorer and case.
+class CostEntry:::runner {
+    %% scorer that incurred the cost
+    +scorer_name: str
+    %% model used
+    +model: str
+    %% prompt tokens
+    +input_tokens: int
+    %% completion tokens
+    +output_tokens: int
+    %% dollar estimate from the price table
+    +estimated_cost: float
+    %% case being scored
+    +case_id: str
+}
+%% CostReport: ledger of CostEntries with totals and breakdowns.
+class CostReport:::runner {
+    %% all recorded cost lines
+    +entries: list[CostEntry]
+    %% sum of estimated_cost (property in the book)
+    +total_cost: float
+    %% sum of prompt tokens (property)
+    +total_input_tokens: int
+    %% sum of completion tokens (property)
+    +total_output_tokens: int
+    %% spend grouped by scorer (property)
+    +cost_by_scorer: dict[str, float]
+    %% spend grouped by model (property)
+    +cost_by_model: dict[str, float]
+    %% formatted text summary of spend
+    +summary() str
+}
+Runner --> Dataset
+Runner o-- Scorer
+Runner --> EvalReport
+Runner ..> EvalResult : returns
+%% NOTE: inheritance below is NOT in the book's code (these are standalone classes there);
+%% shown here as the conceptual "extends Runner" relationship the book's prose describes.
+%% Scorer/Dataset/EvalReport links are inherited from Runner, so not repeated.
+Runner <|-- CostAwareRunner
+Runner <|-- TieredRunner
+Runner <|-- ConcurrentRunner
+%% added: TieredRunner has fast_scorers / slow_scorers instead of scorers
+TieredRunner o-- Scorer : fast / slow
+CostAwareRunner --> CostReport
+CostReport o-- CostEntry
+
+%% ===== Datasets & versioning =====
+
+%% DatasetVersion: one registered snapshot of a dataset (version, size, hash).
+class DatasetVersion:::dataset {
+    %% version label, e.g. v1, v2
+    +version: str
+    %% dataset name
+    +name: str
+    %% number of cases in the snapshot
+    +case_count: int
+    %% content hash to detect silent changes
+    +checksum: str
+    %% when it was registered
+    +created_at: datetime
+    %% what changed since the previous version
+    +changelog: str
+}
+%% DatasetRegistry: stores datasets on disk with a manifest so versions can be
+%% tracked, reloaded and audited.
+class DatasetRegistry:::dataset {
+    %% reads the manifest file
+    -_load_manifest() dict[str, Any]
+    %% writes the manifest file
+    -_save_manifest(manifest: dict[str, Any]) None
+    %% hashes the cases to produce a checksum
+    -_checksum(cases: list[EvalCase]) str
+    %% saves a new version and returns its DatasetVersion
+    +register(dataset: Dataset, changelog: str) DatasetVersion
+    %% loads a dataset by name
+    +load(name: str) Dataset
+    %% lists every version of a dataset
+    +history(name: str) list[DatasetVersion]
+}
+%% SyntheticGenerator: asks an LLM to invent new test cases at a chosen difficulty.
+class SyntheticGenerator:::dataset {
+    %% produces a Dataset of generated EvalCases
+    +generate(count: int, difficulty: str) Dataset
+}
+%% ValidationIssue: a problem found by validate_dataset() (error or warning)
+%% at a given case index.
+class ValidationIssue:::dataset {
+    %% error / warning level
+    +severity: str
+    %% which case has the problem
+    +case_index: int
+    %% description of the problem
+    +message: str
+}
+DatasetRegistry o-- DatasetVersion
+DatasetRegistry --> Dataset
+SyntheticGenerator ..> EvalCase : generates
+%% added: generate() returns a whole Dataset
+SyntheticGenerator ..> Dataset : returns
+%% added: validate_dataset(dataset) -> list[ValidationIssue]
+Dataset ..> ValidationIssue : validate_dataset()
+
+%% ===== Regression & prompts =====
+
+%% RegressionResult: verdict of comparing the current run with the baseline.
+class RegressionResult:::regression {
+    %% true if quality dropped beyond tolerance
+    +is_regression: bool
+    %% change in overall pass rate
+    +overall_delta: float
+    %% change per metric
+    +metric_deltas: dict[str, float]
+    %% cases that passed before and fail now
+    +new_failures: list[str]
+    %% cases that failed before and pass now
+    +new_passes: list[str]
+    %% readable summary
+    +message: str
+}
+%% RegressionDetector: saves a "golden" baseline report and flags drops against it.
+class RegressionDetector:::regression {
+    %% where the baseline file lives
+    +golden_path: Path
+    %% allowed drop before flagging
+    +tolerance: float
+    %% stores an EvalReport as the new baseline
+    +save_baseline(report: EvalReport) Path
+    %% compares a fresh report with the baseline
+    +compare(current: EvalReport) RegressionResult
+}
+%% PromptComparisonResult: A/B outcome of running two prompts on the same dataset.
+class PromptComparisonResult:::regression {
+    %% label of prompt A
+    +prompt_a_name: str
+    %% label of prompt B
+    +prompt_b_name: str
+    %% results for A
+    +report_a: EvalReport
+    %% results for B
+    +report_b: EvalReport
+    %% which prompt scored better
+    +winner: str
+    %% side-by-side metric numbers
+    +metrics_comparison: dict[str, Any]
+}
+%% PromptVersion: one saved version of a prompt, with the pass rate it achieved.
+class PromptVersion:::regression {
+    %% version label
+    +version: str
+    %% the prompt text
+    +content: str
+    %% when it was saved
+    +created_at: datetime
+    %% who saved it
+    +author: str
+    %% eval result recorded for this version
+    +eval_pass_rate: float
+}
+%% PromptRegistry: file-backed store of prompt versions, like git for prompts.
+class PromptRegistry:::regression {
+    %% reads all versions from disk
+    -_load() dict[str, PromptVersion]
+    %% writes all versions to disk
+    -_save(versions: dict[str, PromptVersion]) None
+    %% saves new prompt text as the next version
+    +register(content: str, author: str) PromptVersion
+    %% loads a version by name, or the latest if None
+    +load(name: str | None) PromptVersion
+    %% lists all versions in order
+    +history() list[PromptVersion]
+}
+RegressionDetector --> RegressionResult
+RegressionDetector --> EvalReport
+PromptComparisonResult o-- EvalReport
+PromptRegistry o-- PromptVersion
+
+%% ===== RAG =====
+
+%% RAGCase: one retrieval-augmented-generation test case: the query, what was
+%% retrieved, the generated answer and the ground truth for comparison.
+class RAGCase:::rag {
+    %% user question
+    +query: str
+    %% chunks the retriever returned
+    +retrieved_contexts: list[str]
+    %% answer the system produced
+    +generated_answer: str
+    %% reference answer (optional)
+    +expected_answer: str | None
+    %% chunks that should have been retrieved (optional)
+    +ground_truth_contexts: list[str] | None
+}
+
+%% ===== Agents =====
+
+%% ToolCall: one tool invocation made by an agent.
+class ToolCall:::agent {
+    %% tool that was called
+    +tool_name: str
+    %% arguments passed
+    +arguments: dict[str, Any]
+    %% returned value
+    +result: str
+    %% call duration
+    +latency_ms: float
+    %% error text if the call failed
+    +error: str | None
+}
+%% AgentStep: one step in the agent loop (thought, tool call, observation, answer).
+class AgentStep:::agent {
+    %% kind of step
+    +step_type: str
+    %% text of the step
+    +content: str
+    %% the tool call, when the step is one
+    +tool_call: ToolCall
+}
+%% AgentTrajectory: full record of an agent run, the input for agent scorers.
+class AgentTrajectory:::agent {
+    %% task given to the agent
+    +task: str
+    %% every step taken
+    +steps: list[AgentStep]
+    %% final response
+    +final_answer: str
+    %% total run time
+    +total_latency_ms: float
+    %% total tokens consumed
+    +total_tokens: int
+    %% number of loop iterations
+    +iterations: int
+    %% all tool calls, in order (property)
+    +tool_calls: list[ToolCall]
+    %% tool names only (property)
+    +tool_names: list[str]
+    %% calls that errored (property)
+    +tool_errors: list[ToolCall]
+    %% renders the trajectory as text, e.g. to feed an LLM judge
+    +to_text() str
+}
+AgentTrajectory o-- AgentStep
+AgentStep o-- ToolCall
+
+%% ===== Human annotation =====
+
+%% Annotation: one human's judgement of one case.
+class Annotation:::annotation {
+    %% case being judged
+    +case_id: str
+    %% who judged it
+    +annotator: str
+    %% numeric rating
+    +score: float
+    %% categorical label
+    +label: str
+    %% free-text justification
+    +reasoning: str
+    %% criteria used
+    +criteria: list[str]
+    %% when it was recorded
+    +timestamp: datetime
+    %% extra info
+    +metadata: dict[str, Any]
+}
+%% AnnotationTask: what a human is shown to grade: input, output, reference.
+class AnnotationTask:::annotation {
+    %% case id to attach the annotation to
+    +case_id: str
+    %% original prompt
+    +task_input: str
+    %% output to grade
+    +system_output: str
+    %% reference answer
+    +expected_output: str
+    %% rubric
+    +criteria: list[str]
+    %% extra context for the annotator
+    +context: str
+}
+%% AnnotationBatch: a bundle of tasks sent to annotators plus the annotations
+%% that came back.
+class AnnotationBatch:::annotation {
+    %% unique batch id
+    +batch_id: str
+    %% tasks to annotate
+    +tasks: list[AnnotationTask]
+    %% rubric for the batch
+    +criteria: list[str]
+    %% creation time
+    +created_at: datetime
+    %% collected judgements
+    +annotations: list[Annotation]
+    %% e.g. pending / complete
+    +status: str
+    %% share of tasks that have annotations
+    +completion_rate() float
+    %% writes the batch to JSON on disk
+    +save(path: Path) Path
+    %% reads a batch back from disk
+    +load(path: Path) AnnotationBatch
+}
+%% AgreementReport: inter-annotator agreement statistics for a batch.
+class AgreementReport:::annotation {
+    %% how many people annotated
+    +num_annotators: int
+    %% how many cases were covered
+    +num_cases: int
+    %% share of cases where scores are identical
+    +exact_agreement_rate: float
+    %% share of cases where scores differ by at most 1
+    +within_one_agreement_rate: float
+    %% average gap between highest and lowest score
+    +mean_spread: float
+    %% chance-corrected agreement; None when it cannot be computed
+    +cohens_kappa: float | None
+    %% cases with the biggest disagreement
+    +problem_cases: list[str]
+}
+AnnotationBatch o-- AnnotationTask
+AnnotationBatch o-- Annotation
+%% added: helper functions connect these in the book
+%% create_batch_from_failures(report) -> AnnotationBatch
+EvalReport ..> AnnotationBatch : create_batch_from_failures()
+%% compute_agreement(batch) -> AgreementReport
+AnnotationBatch ..> AgreementReport : compute_agreement()
+%% annotations_to_calibration_cases(batch) -> list[CalibrationCase]
+AnnotationBatch ..> CalibrationCase : annotations_to_calibration_cases()
+%% annotations_to_golden_dataset(batch) -> Dataset
+AnnotationBatch ..> Dataset : annotations_to_golden_dataset()
+
+%% ===== Production monitoring =====
+
+%% SampledRequest: a live production request/response pair picked for scoring.
+class SampledRequest:::monitor {
+    %% request id
+    +request_id: str
+    %% user input
+    +input: str
+    %% system output
+    +output: str
+    %% when it happened
+    +timestamp: datetime
+    %% scores attached after evaluation
+    +scores: list[ScoreResult]
+}
+%% ProductionSampler: samples a fraction of live traffic and scores it with
+%% cheap scorers.
+class ProductionSampler:::monitor {
+    %% sampling probability, 0 to 1
+    -_rate: float
+    %% scorers applied to samples
+    -_scorers: list[Scorer]
+    %% samples waiting to be flushed
+    -_buffer: list[SampledRequest]
+    %% random draw: should this request be sampled?
+    +should_sample() bool
+    %% scores one sample and attaches the results
+    +evaluate_sample(request: SampledRequest) SampledRequest
+    %% returns and clears the buffer
+    +flush() list[SampledRequest]
+    %% counts of seen / sampled requests
+    +stats() dict[str, Any]
+}
+%% QualityWindow: aggregate quality over one time window, with alert info.
+class QualityWindow:::monitor {
+    %% window start
+    +window_start: datetime
+    %% window end
+    +window_end: datetime
+    %% number of samples in it
+    +sample_count: int
+    %% mean score per scorer
+    +avg_scores: dict[str, float]
+    %% pass rate in the window
+    +pass_rate: float
+    %% true if a threshold was breached
+    +alert_triggered: bool
+    %% alert text
+    +alert_message: str
+}
+%% QualityMonitor: turns sampled requests into windows, checks thresholds, and
+%% tracks the trend over time.
+class QualityMonitor:::monitor {
+    %% minimum score per metric before alerting
+    -_thresholds: dict[str, float]
+    %% below this many samples no alert is raised
+    -_min_samples: int
+    %% history of processed windows
+    -_windows: list[QualityWindow]
+    %% aggregates samples into a QualityWindow and checks for alerts
+    +process_window(samples: list[SampledRequest]) QualityWindow
+    %% direction of change per metric across windows
+    +trend() dict[str, float]
+}
+ProductionSampler o-- Scorer
+ProductionSampler --> SampledRequest
+QualityMonitor o-- QualityWindow
+QualityMonitor --> SampledRequest
+%% added: SampledRequest.scores holds ScoreResults
+SampledRequest o-- ScoreResult
+
+%% ===== Integrations & workflows =====
+
+%% EvalKitToDeepEvalMetric: adapter that lets an evalkit Scorer be used as a
+%% DeepEval metric.
+class EvalKitToDeepEvalMetric:::misc {
+    %% name DeepEval reports for the metric
+    +\_\_name\_\_: str
+    %% DeepEval entry point: scores a test case with the wrapped scorer
+    +measure(test_case: Any) float
+    %% DeepEval hook: did the last measurement pass?
+    +is_successful() bool
+}
+%% ExperimentRecord: one row in the experiment log (model + prompt + results).
+class ExperimentRecord:::misc {
+    %% unique id
+    +experiment_id: str
+    %% what was tried
+    +description: str
+    %% prompt version used
+    +prompt_version: str
+    %% model used
+    +model: str
+    %% resulting pass rate
+    +pass_rate: float
+    %% resulting average scores
+    +avg_scores: dict[str, float]
+    %% regression verdict against baseline
+    +regression: RegressionResult
+    %% when it ran
+    +timestamp: datetime
+}
+%% EDDWorkflow: evaluation-driven-development loop. Run an experiment, compare
+%% with the baseline, log it, find the best one.
+class EDDWorkflow:::misc {
+    %% data to evaluate on
+    +dataset: Dataset
+    %% scorers to apply
+    +scorers: list[Scorer]
+    %% regression check against the golden baseline
+    +detector: RegressionDetector
+    %% reads the experiment log from disk
+    -_load_history() list[ExperimentRecord]
+    %% writes the experiment log to disk
+    -_save_history(history: list[ExperimentRecord]) None
+    %% runs one model/prompt combination, logs and returns the record
+    +run_experiment(model: str, prompt_version: str) ExperimentRecord
+    %% prints the experiment table
+    +print_history() None
+    %% returns the highest-scoring experiment
+    +best_experiment() ExperimentRecord
+}
+%% SupportBot: the example customer-support chatbot (with tool use) that the
+%% book evaluates; not part of evalkit itself.
+class SupportBot:::misc {
+    %% instructions for the model
+    +system_prompt: str
+    %% model id
+    +model: str
+    %% answers one customer message, calling tools if needed
+    +handle(message: str) str
+    %% runs a tool the model asked for
+    -_execute_tool(name: str, arguments: dict[str, Any]) str
+}
+EvalKitToDeepEvalMetric o-- Scorer : wraps
+LangfuseScorer o-- Scorer : wraps
+EDDWorkflow o-- Dataset
+EDDWorkflow o-- Scorer
+EDDWorkflow *-- RegressionDetector
+EDDWorkflow o-- ExperimentRecord
+%% added: ExperimentRecord.regression, and run_experiment builds a Runner
+ExperimentRecord o-- RegressionResult
+EDDWorkflow ..> Runner : creates
+
+%% ===== Colour coding by area =====
+classDef core fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+classDef scorer fill:#dcfce7,stroke:#16a34a,color:#14532d
+classDef guardrail fill:#ffedd5,stroke:#ea580c,color:#7c2d12
+classDef runner fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+classDef dataset fill:#ccfbf1,stroke:#0d9488,color:#134e4a
+classDef judge fill:#c7d2fe,stroke:#4f46e5,color:#312e81
+classDef regression fill:#fef9c3,stroke:#ca8a04,color:#713f12
+classDef rag fill:#fce7f3,stroke:#db2777,color:#831843
+classDef agent fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+classDef annotation fill:#e7e5e4,stroke:#78716c,color:#292524
+classDef monitor fill:#cffafe,stroke:#0891b2,color:#164e63
+classDef misc fill:#e5e7eb,stroke:#4b5563,color:#1f2937
