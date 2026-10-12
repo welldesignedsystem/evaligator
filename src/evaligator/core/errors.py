@@ -5,6 +5,10 @@ class EvaligatorError(Exception):
     """Base class for every error raised by evaligator."""
 
 
+class DatasetError(EvaligatorError):
+    """Raised when a dataset cannot be loaded, parsed, or written."""
+
+
 class ScorerError(EvaligatorError):
     """Raised when a scorer is misconfigured or fails unexpectedly."""
 
