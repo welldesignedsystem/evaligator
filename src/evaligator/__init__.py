@@ -1,6 +1,7 @@
 from evaligator.core.dataset import Dataset
 from evaligator.core.models import EvalCase, EvalReport, EvalResult, ScoreResult, ScoreType
 from evaligator.core.protocols import Scorer
+from evaligator.runners.base import Runner
 from evaligator.scorers.base import BaseScorer
 from evaligator.scorers.contains import Contains
 from evaligator.scorers.exact import ExactMatch
@@ -15,6 +16,7 @@ __all__ = [
     "EvalResult",
     "ExactMatch",
     "RegexMatch",
+    "Runner",
     "ScoreResult",
     "ScoreType",
     "Scorer",

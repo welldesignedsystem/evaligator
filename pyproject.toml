@@ -65,6 +65,7 @@ root_package = "evaligator"
 name = "domain layering"
 type = "layers"
 layers = [
+    "evaligator.runners",
     "evaligator.scorers",
     "evaligator.core",
 ]
