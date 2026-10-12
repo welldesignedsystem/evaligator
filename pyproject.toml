@@ -1,7 +1,7 @@
 [project]
 name = "evaligator"
 version = "0.1.0"
-description = "Add your description here"
+description = "Framework-agnostic LLM evaluation framework with adapters to third-party eval tools."
 readme = "README.md"
 authors = [
     { name = "welldesignedsystem", email = "welldesignedsystem@gmail.com" }
@@ -12,6 +12,59 @@ dependencies = []
 [project.scripts]
 evaligator = "evaligator:main"
 
+# Third-party eval frameworks are only ever touched by adapter packages, never by
+# the core. Each integration is an optional extra so the core installs standalone.
+# promptfoo is a Node CLI, so its adapter shells out and has no Python dependency.
+[project.optional-dependencies]
+deepeval = ["deepeval"]
+braintrust = ["braintrust"]
+langfuse = ["langfuse"]
+
 [build-system]
 requires = ["uv_build>=0.12.18,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.100",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "import-linter>=2.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: marks tests as slow",
+    "network: marks tests that hit external services",
+]
+
+# Layering: dependencies point only downward. Expand the layers as new domain
+# packages land (runners, datasets, ..., integrations).
+[tool.importlinter]
+root_package = "evaligator"
+
+[[tool.importlinter.contracts]]
+name = "domain layering"
+type = "layers"
+layers = [
+    "evaligator.scorers",
+    "evaligator.core",
+]

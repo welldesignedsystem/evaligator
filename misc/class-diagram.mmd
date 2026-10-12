@@ -406,6 +406,20 @@ class JudgeConfig:::judge {
 }
 %% CalibrationCase: pairs a human score with the judge's score for the same
 %% output, used to measure how well the judge tracks humans.
+%% Calibration metrics computed over a set of these cases (human_score vs judge_score):
+%%   - agreement rate: share of cases where judge matches the human, exactly
+%%     or within a tolerance band (e.g. +/- 0.5). Answers "same verdict?"
+%%   - correlation: whether judge scores rank cases the same way humans do;
+%%     1.0 = identical ranking even if the values are shifted high or low.
+%%   - bias: mean(judge_score - human_score); direction of systematic error.
+%%     Positive = judge lenient, negative = judge strict. Opposite-sign
+%%     errors cancel, so bias alone can look fine while being wrong per-case.
+%%   - mean absolute error: mean(|judge_score - human_score|); error size
+%%     with no cancellation. Bias = direction, MAE = magnitude.
+%% Read together: high |bias| + low MAE = consistent offset (fix by shifting
+%% JudgeConfig.pass_score); low bias + high MAE = scattered errors (needs a
+%% better judge prompt/model). Automate only when agreement and correlation
+%% are high and bias/MAE are low.
 class CalibrationCase:::judge {
     %% id shared with the annotation
     +case_id: str
@@ -788,8 +802,8 @@ class AgentStep:::agent {
     +step_type: str
     %% text of the step
     +content: str
-    %% the tool call, when the step is one
-    +tool_call: ToolCall
+    %% the tool call; only present when the step is one
+    +tool_call: ToolCall | None
 }
 %% AgentTrajectory: full record of an agent run, the input for agent scorers.
 class AgentTrajectory:::agent {
