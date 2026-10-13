@@ -12,6 +12,11 @@
   - CLI: `uv run evaligator` (entrypoint `evaligator:main`)
 - Config for all of the above lives in `pyproject.toml` (`[tool.ruff]`, `[tool.mypy]`, `[tool.pytest.ini_options]`, `[tool.importlinter]`).
 
+## ZMOT scratch area (`zmot/`)
+- `zmot/` is a sandbox for experiments ("zero moment of truth"). Throwaway code lives there.
+- Relaxed rules inside `zmot/`: no requirement to run format/lint/mypy/lint-imports, no contract suite, no ports-and-adapters layering, no public-API re-export. Skip `zmot/` when running the verification pipeline; keep `src/` and `tests/` strict.
+- Nothing in `zmot/` is importable by `src/` — it is a leaf, never a dependency.
+
 ## Architecture rules (enforced, not aspirational)
 - Ports & adapters. Dependency direction is one-way: `core` imports only the stdlib; domain packages (`scorers`, later `runners`/`datasets`/…) depend on `core`; **third-party eval SDKs are imported only under `integrations/`** (not built yet).
 - `uv run lint-imports` enforces the `domain layering` contract. Extend its `layers` list in `pyproject.toml` as new packages land — a new package not listed is not checked.

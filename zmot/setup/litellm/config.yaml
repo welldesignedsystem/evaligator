@@ -1,0 +1,16 @@
+model_list:
+  # Logical names live on the left; the provider string on the right is what
+  # LiteLLM actually calls. Start on OpenRouter, swap/add providers later without
+  # changing application code (it always asks LiteLLM for the logical name).
+  - model_name: nvidia/nemotron-3-super-120b-a12b:free
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+litellm_settings:
+  drop_params: true
+  num_retries: 2
+  request_timeout: 60
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

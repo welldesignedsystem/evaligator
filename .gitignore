@@ -21,6 +21,12 @@ htmlcov/
 .env
 .env.*
 
+# ZMOT scratch area — throwaway experiment artifacts
+zmot/**/.deepeval/
+zmot/**/deepeval.db
+zmot/**/test_run_*.json
+zmot/**/*.log
+
 # Editors / OS
 .idea/
 .vscode/

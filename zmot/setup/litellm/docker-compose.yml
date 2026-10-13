@@ -1,0 +1,42 @@
+services:
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    container_name: evaligator-litellm
+    # Bind to localhost only — this is a local dev gateway, not a public service.
+    ports:
+      - "127.0.0.1:4000:4000"
+    env_file:
+      - .env
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set it in .env}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?set it in .env}
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD:-litellm}@db:5432/litellm
+      # Lets the Admin UI add/manage models and stores keys + spend logs.
+      STORE_MODEL_IN_DB: "True"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    command:
+      - "--config=/app/config.yaml"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    container_name: evaligator-litellm-db
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-litellm}
+      POSTGRES_DB: litellm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
